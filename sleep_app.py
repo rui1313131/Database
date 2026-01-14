@@ -35,7 +35,7 @@ for k, v in {'user_auth': None, 'is_sleeping': False, 'save_ready': False, 'alar
 if st.session_state.user_auth is None:
     st.title("🌙 Sleep Tracker Pro")
     auth_tab = st.radio("メニュー", ["ログイン", "新規登録"], horizontal=True)
-    with st.form(key="auth_v5"):
+    with st.form(key="auth_v_final"):
         u, p = st.text_input("ユーザー名"), st.text_input("パスワード", type="password")
         if st.form_submit_button("実行"):
             hp = hash_pw(p)
@@ -44,12 +44,12 @@ if st.session_state.user_auth is None:
                 if res.data:
                     st.session_state.user_auth = {"id": res.data[0]['id'], "name": res.data[0]['username']}
                     st.rerun()
-                else: st.error("ログイン情報が正しくありません")
+                else: st.error("情報が正しくありません")
             else:
                 try:
                     supabase.table("users").insert({"username": u, "password": hp}).execute()
-                    st.success("登録完了！ログインしてください")
-                except: st.error("登録エラー。別の名前を試してください。")
+                    st.success("完了！ログインしてください")
+                except: st.error("エラー。別の名前を試してください。")
 else:
     # --- 4. メイン画面 ---
     user = st.session_state.user_auth
@@ -72,7 +72,7 @@ else:
                 time.sleep(1)
         elif st.session_state.save_ready:
             sec = (st.session_state.end_time - st.session_state.start_time).total_seconds()
-            st.subheader(f"今回の睡眠: {int(sec)} 秒")
+            st.subheader(f"睡眠時間: {int(sec)} 秒")
             sat = st.select_slider("満足度", options=[1,2,3,4,5], value=3)
             if st.button("クラウドに保存", use_container_width=True):
                 supabase.table("sleep_records").insert({
@@ -87,46 +87,47 @@ else:
                 st.session_state.is_sleeping = True
                 st.rerun()
 
-    # 【タブ2：データ分析】期間の「幅」を固定する修正
+    # 【分析タブ】グラフの期間表示不具合を修正
     with tabs[1]:
         st.header("📊 精密分析")
         res = supabase.table("sleep_records").select("*").eq("user_id", user['id']).order("start_time").execute()
         if res.data:
             df = pd.DataFrame(res.data)
             df['dt'] = pd.to_datetime(df['start_time'], utc=True)
-            period = st.selectbox("📅 範囲を選択", ["今日のみ", "過去1週間", "過去1か月"])
+            period = st.selectbox("📅 表示範囲を選択", ["今日のみ", "過去1週間", "過去1か月"])
+            
             now_utc = datetime.now(timezone.utc)
             today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
 
+            # 表示範囲の「端から端まで」を固定
             if period == "今日のみ":
-                df_f = df[df['dt'] >= today_start].copy()
-                x_scale = alt.X('dt:T', title='時刻', axis=alt.Axis(format='%H:%M'))
+                limit = today_start
+                x_scale = alt.X('dt:T', title='時刻', axis=alt.Axis(format='%H:%M'), scale=alt.Scale(domain=[limit, now_utc]))
             elif period == "過去1週間":
                 limit = today_start - timedelta(days=7)
-                df_f = df[df['dt'] >= limit].copy()
-                # グラフの横軸を1週間に固定
-                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'), 
-                                scale=alt.Scale(domain=[limit.timestamp() * 1000, now_utc.timestamp() * 1000]))
+                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d', tickCount=7), scale=alt.Scale(domain=[limit, now_utc]))
             else:
                 limit = today_start - timedelta(days=30)
-                df_f = df[df['dt'] >= limit].copy()
-                # グラフの横軸を1か月に固定
-                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'), 
-                                scale=alt.Scale(domain=[limit.timestamp() * 1000, now_utc.timestamp() * 1000]))
+                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d', tickCount=10), scale=alt.Scale(domain=[limit, now_utc]))
+
+            df_f = df[df['dt'] >= limit].copy()
 
             if not df_f.empty:
                 st.metric("平均睡眠時間", f"{df_f['duration'].mean():.1f} 秒")
-                st.altair_chart(alt.Chart(df_f).mark_bar(color=accent, size=20).encode(
-                    x=x_scale, y=alt.Y('duration:Q', title='睡眠時間 [秒]')
-                ).properties(height=400), use_container_width=True)
-            else: st.warning("選択した範囲にデータがありません")
-        else: st.info("記録を保存するとグラフが出ます")
+                chart = alt.Chart(df_f).mark_bar(color=accent, size=15).encode(
+                    x=x_scale,
+                    y=alt.Y('duration:Q', title='睡眠時間 [秒]'),
+                    tooltip=['dt', 'duration']
+                ).properties(height=400).interactive()
+                st.altair_chart(chart, use_container_width=True)
+            else: st.warning("選択した期間にデータがありません")
+        else: st.info("データを保存するとここに表示されます")
 
-    # 【タブ3：アラーム】音が出るための準備を追加
+    # 【アラームタブ】音が出ない問題を修正
     with tabs[2]:
         st.header("⏰ アラーム")
-        st.warning("⚠️ ブラウザの仕様上、一度下の「音出しテスト」ボタンを押さないと、自動で音が鳴りません。")
-        if st.button("🔈 音出しテスト (ブラウザに音を許可させる)"):
+        st.write("🔔 ブラウザの制限により、一度下のボタンを押さないと音が鳴りません。")
+        if st.button("🔈 音出しテスト (ブラウザに音を許可)"):
             st.markdown(f'<audio src="https://www.soundjay.com/buttons/beep-01a.mp3" autoplay></audio>', unsafe_allow_html=True)
         
         vol = st.slider("音量", 0.0, 1.0, 0.5)
@@ -134,14 +135,15 @@ else:
         h, m = c1.number_input("時", 0, 23, 7), c2.number_input("分", 0, 59, 0)
         
         if st.session_state.alarm_on:
-            if st.button("🔕 停止", type="primary", use_container_width=True):
+            if st.button("🔕 アラームを止める", type="primary", use_container_width=True):
                 st.session_state.alarm_on = False; st.rerun()
             st.markdown(f'<audio src="https://www.soundjay.com/buttons/beep-01a.mp3" autoplay loop></audio><script>document.querySelector("audio").volume={vol}</script>', unsafe_allow_html=True)
             st.error("⏰ 起きる時間です！！")
-        elif st.button("アラームをセット", use_container_width=True):
+        elif st.button("この時間でアラームをセット"):
             target = f"{h:02d}:{m:02d}"
-            st.info(f"{target} にセット。このタブを開いたままにしておいてください。")
+            st.info(f"{target} にセット。タブを開いたままにしてください。")
             while True:
+                # 1秒ごとにチェックし、時間になったら状態を更新
                 if datetime.now().strftime("%H:%M") == target:
                     st.session_state.alarm_on = True; st.rerun()
-                time.sleep(10)
+                time.sleep(1)
