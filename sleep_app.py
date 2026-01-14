@@ -28,7 +28,6 @@ with st.sidebar:
 bg, text, accent = ("#050505", "#E0E0E0", "#00E5FF") if display_mode == "ダークモード" else ("#FFFFFF", "#333333", "#007BFF")
 st.markdown(f"<style>.stApp {{ background-color: {bg}; color: {text}; }} .big-timer {{ font-family: 'Courier New'; font-size: 100px; font-weight: bold; color: {accent}; text-align: center; padding: 40px; border: 3px solid {accent}; border-radius: 20px; background: rgba(0, 229, 255, 0.05); margin: 20px 0; }}</style>", unsafe_allow_html=True)
 
-# セッション状態の初期化
 for k, v in {'user_auth': None, 'is_sleeping': False, 'save_ready': False, 'alarm_on': False, 'alarm_volume': 0.5}.items():
     if k not in st.session_state: st.session_state[k] = v
 
@@ -36,7 +35,7 @@ for k, v in {'user_auth': None, 'is_sleeping': False, 'save_ready': False, 'alar
 if st.session_state.user_auth is None:
     st.title("🌙 Sleep Tracker Pro")
     auth_tab = st.radio("メニュー", ["ログイン", "新規登録"], horizontal=True)
-    with st.form(key="auth_final"):
+    with st.form(key="auth_v5"):
         u, p = st.text_input("ユーザー名"), st.text_input("パスワード", type="password")
         if st.form_submit_button("実行"):
             hp = hash_pw(p)
@@ -56,7 +55,6 @@ else:
     user = st.session_state.user_auth
     tabs = st.tabs(["睡眠記録", "データ分析", "アラーム"])
 
-    # 【タブ1：睡眠記録】巨大タイマー復活
     with tabs[0]:
         st.markdown("<h1 style='text-align: center;'>睡眠計測</h1>", unsafe_allow_html=True)
         if st.session_state.is_sleeping:
@@ -85,21 +83,18 @@ else:
         else:
             if st.button("🛌 睡眠開始", type="primary", use_container_width=True):
                 now = datetime.now(timezone.utc)
-                st.session_state.start_time = now
-                st.session_state.start_t_str = now.isoformat()
+                st.session_state.start_time, st.session_state.start_t_str = now, now.isoformat()
                 st.session_state.is_sleeping = True
                 st.rerun()
 
-    # 【タブ2：データ分析】1日・1週間・1か月切り替え復活
+    # 【タブ2：データ分析】期間の「幅」を固定する修正
     with tabs[1]:
         st.header("📊 精密分析")
         res = supabase.table("sleep_records").select("*").eq("user_id", user['id']).order("start_time").execute()
         if res.data:
             df = pd.DataFrame(res.data)
             df['dt'] = pd.to_datetime(df['start_time'], utc=True)
-            
             period = st.selectbox("📅 範囲を選択", ["今日のみ", "過去1週間", "過去1か月"])
-            # image_17cec7 の TypeError 対策：timezone.utc を使用
             now_utc = datetime.now(timezone.utc)
             today_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -109,26 +104,31 @@ else:
             elif period == "過去1週間":
                 limit = today_start - timedelta(days=7)
                 df_f = df[df['dt'] >= limit].copy()
-                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'))
+                # グラフの横軸を1週間に固定
+                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'), 
+                                scale=alt.Scale(domain=[limit.timestamp() * 1000, now_utc.timestamp() * 1000]))
             else:
                 limit = today_start - timedelta(days=30)
                 df_f = df[df['dt'] >= limit].copy()
-                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'))
+                # グラフの横軸を1か月に固定
+                x_scale = alt.X('dt:T', title='日付', axis=alt.Axis(format='%m/%d'), 
+                                scale=alt.Scale(domain=[limit.timestamp() * 1000, now_utc.timestamp() * 1000]))
 
             if not df_f.empty:
                 st.metric("平均睡眠時間", f"{df_f['duration'].mean():.1f} 秒")
-                st.altair_chart(alt.Chart(df_f).mark_bar(color=accent).encode(
+                st.altair_chart(alt.Chart(df_f).mark_bar(color=accent, size=20).encode(
                     x=x_scale, y=alt.Y('duration:Q', title='睡眠時間 [秒]')
                 ).properties(height=400), use_container_width=True)
-                st.altair_chart(alt.Chart(df_f).mark_bar(color="#FFA500").encode(
-                    x=x_scale, y=alt.Y('satisfaction:Q', title='満足度 [1-5]', scale=alt.Scale(domain=[0, 5]))
-                ).properties(height=200), use_container_width=True)
-            else: st.warning("該当日付にデータがありません")
+            else: st.warning("選択した範囲にデータがありません")
         else: st.info("記録を保存するとグラフが出ます")
 
-    # 【タブ3：アラーム】完全復活
+    # 【タブ3：アラーム】音が出るための準備を追加
     with tabs[2]:
         st.header("⏰ アラーム")
+        st.warning("⚠️ ブラウザの仕様上、一度下の「音出しテスト」ボタンを押さないと、自動で音が鳴りません。")
+        if st.button("🔈 音出しテスト (ブラウザに音を許可させる)"):
+            st.markdown(f'<audio src="https://www.soundjay.com/buttons/beep-01a.mp3" autoplay></audio>', unsafe_allow_html=True)
+        
         vol = st.slider("音量", 0.0, 1.0, 0.5)
         c1, c2 = st.columns(2)
         h, m = c1.number_input("時", 0, 23, 7), c2.number_input("分", 0, 59, 0)
@@ -138,9 +138,9 @@ else:
                 st.session_state.alarm_on = False; st.rerun()
             st.markdown(f'<audio src="https://www.soundjay.com/buttons/beep-01a.mp3" autoplay loop></audio><script>document.querySelector("audio").volume={vol}</script>', unsafe_allow_html=True)
             st.error("⏰ 起きる時間です！！")
-        elif st.button("セット", use_container_width=True):
+        elif st.button("アラームをセット", use_container_width=True):
             target = f"{h:02d}:{m:02d}"
-            st.info(f"{target} にセット。タブを開いたままにしておいてください。")
+            st.info(f"{target} にセット。このタブを開いたままにしておいてください。")
             while True:
                 if datetime.now().strftime("%H:%M") == target:
                     st.session_state.alarm_on = True; st.rerun()
